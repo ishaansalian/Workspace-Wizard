@@ -23,24 +23,7 @@ Workspace Wizard is an autonomous desk organization system designed to optimize 
   - Power management system (for optimal battery usage)  
 - **Software:**  
   - Python (for control logic and algorithms)  
-  - OpenCV (for computer vision tasks)  
-  - TensorFlow (for machine learning model development)  
-  - ROS (Robot Operating System, for communication and task management)  
-
-**Objectives:**  
-- Develop and integrate the hardware for object manipulation, including motors and sensor systems.
-- Implement pathfinding algorithms and object sorting logic.
-- Train and deploy machine learning models to recognize and classify objects.
-- Ensure smooth operation with minimal human intervention.
-
-**Current Status:**  
-- The hardware setup is largely complete, with the camera, tracks, and motors delivered.
-- Progress is being made on integrating the object recognition models and fine-tuning movement algorithms.
-- The team is working on refining the pathfinding logic and implementing object placement strategies.
-
-**Upcoming Tasks:**  
-- Finalize the software stack and integrate camera input for real-time object detection.
-- Begin testing with real objects and ensure the robot can autonomously sort and organize the workspace.
+  - OpenCV (for computer vision tasks)
 
 **References:**  
 - Hu, Y., Zhang, Z., Zhu, X., Liu, R., Philippe Martin Wyder, & Lipson, H. (2023). Knolling bot: Learning robotic object arrangement from tidy demonstrations. https://api.semanticscholar.org/CorpusID:268513198
