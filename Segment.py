@@ -1,3 +1,19 @@
+"""
+Ishaan's version from PDR
+
+Dependencies:
+1. Install OpenCV:
+   pip install opencv-python
+
+2. Install YOLOv8 and its dependencies:
+   pip install ultralytics
+
+To run the script:
+   python3 segment.py --device "cpu"
+
+This script uses YOLOv8 with segmentation to detect and highlight target objects 
+(e.g., cups, bottles, laptops) in an input image or video stream with semi-transparent masks.
+"""
 import cv2
 import numpy as np
 import argparse
