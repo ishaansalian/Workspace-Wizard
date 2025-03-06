@@ -17,9 +17,10 @@ Workspace Wizard is an autonomous desk organization system designed to optimize 
 
 **Technologies Used:**  
 - **Hardware:**  
-  - Raspberry Pi / Jetson (for processing and computation)  
-  - Stepper motors and tracks (for movement)  
-  - Camera (for object detection and tracking)  
+  - Nvidia Jetson (for processing and computation)  
+  - Servo motors and tracks (for movement)
+  - Custom PCB (for controls)
+  - USB Camera (for object detection and tracking)  
   - Power management system (for optimal battery usage)  
 - **Software:**  
   - Python (for control logic and algorithms)  
