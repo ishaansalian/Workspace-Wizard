@@ -4,31 +4,42 @@ import numpy as np
 import time
 import os
 import math
+import asyncio
+from bleak import BleakClient
+import re
 
+# ArUco marker settings
 ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
 MARKER_IDS = [0, 1, 2, 3, 4]  
 MARKER_SIZE = 200  # pixels
-CAPTURE_INTERVAL = 10  # #sec to take image
+CAPTURE_INTERVAL = 10  # sec to take image
 CALIBRATION_DIR = "calibration_images"
 CHESSBOARD_SIZE = (11, 7)  # chessboard size
 SQUARE_SIZE = 2.1  # cm
 NUM_CALIBRATION_IMGS = 15
-MOVEMENT_UNIT = 8.89  # cm 
+MOVEMENT_UNIT = 1.0  # cm 
 
 # Pixel to cm conversion ratio (will be calculated during runtime)
 PIXEL_TO_CM_RATIO = None
 
-# "fisheye" distortion fix; save in npz file if cam position stays the same
+# Camera calibration file
 CALIBRATION_FILE = "camera_calibration.npz"
 
-# already generated; this code is for if they're lost/corrupted
+# BLE settings
+BLE_ADDRESS = "4D9AF5DE-80E1-6702-F956-D874824235C9"
+CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+VALID_COMMANDS = {"F", "B", "L", "R", "N", "M", "O", "P"}
+CUSTOM_MESSAGES = {"finished", "stuck"}
+COMMAND_DELAY = 1.0  # seconds between sending commands
+
+# ArUco marker generation
 def generate_aruco_markers():
     for marker_id in MARKER_IDS:
         marker = aruco.generateImageMarker(ARUCO_DICT, marker_id, MARKER_SIZE)
         cv2.imwrite(f"marker_{marker_id}.png", marker)
     print("Markers saved as PNG files.")
 
-# if calibration file already exists, use it; otherwise use new images
+# Camera calibration functions
 def calibrate_camera():
     if os.path.exists(CALIBRATION_FILE):
         print("Loading existing camera calibration...")
@@ -132,6 +143,7 @@ def undistort_image(frame, camera_matrix, dist_coeffs):
     
     return undistorted
 
+# ArUco marker detection
 def detect_aruco_markers(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT)
@@ -236,6 +248,7 @@ def pixels_to_cm(x_px, y_px, ratio):
     
     return x_cm, y_cm
 
+# Motion planning functions
 def generate_movement_commands(current_x_cm, current_y_cm, current_orientation, target_x_cm, target_y_cm):
     """Generate movement commands to reach the target position"""
     commands = []
@@ -326,7 +339,91 @@ def get_rotation_commands(current_orientation, target_orientation):
     
     return commands
 
-def main():
+# BLE communication functions
+def parse_command(input_str):
+    """Parse input like '10F', 'M', or custom messages like 'finished'."""
+    input_str = input_str.strip().lower()
+    if input_str in CUSTOM_MESSAGES:
+        return input_str
+    match = re.fullmatch(r'(\d*)([FBLRNMOP])', input_str.upper())
+    if match:
+        count = match.group(1)
+        command = match.group(2)
+        return (count if count else "1") + command
+    return None
+
+async def send_commands_ble(commands):
+    """Send a list of commands over BLE with a delay between each"""
+    try:
+        async with BleakClient(BLE_ADDRESS) as client:
+            if await client.is_connected():
+                print(f"Connected to {BLE_ADDRESS}")
+                
+                for cmd in commands:
+                    parsed_command = parse_command(cmd)
+                    if parsed_command:
+                        print(f"Sending command: {parsed_command}")
+                        await client.write_gatt_char(CHARACTERISTIC_UUID, parsed_command.encode())
+                        print(f"Command sent: {parsed_command}")
+                        await asyncio.sleep(COMMAND_DELAY)  # Delay between commands
+                    else:
+                        print(f"Invalid command format: {cmd}")
+                
+                print("All commands sent successfully.")
+                return True
+            else:
+                print("Failed to connect to ESP32!")
+                return False
+    except Exception as e:
+        print(f"Error in BLE communication: {e}")
+        return False
+
+# Modified function: now automatically navigates to marker 3
+async def enter_movement_mode(marker_centers, pixel_to_cm_ratio, robot_orientation):
+    # Check if both robot (marker 0) and target (marker 3) are visible
+    if 0 not in marker_centers:
+        print("Cannot enter movement mode: Robot marker (ID 0) not detected.")
+        return
+    
+    if 3 not in marker_centers:
+        print("Cannot enter movement mode: Target marker (ID 3) not detected.")
+        return
+            
+    if pixel_to_cm_ratio is None:
+        print("Cannot enter movement mode: Pixel to cm ratio not calculated.")
+        return
+    
+    # Get current robot position
+    robot_x_px, robot_y_px = marker_centers[0]
+    robot_x_cm, robot_y_cm = pixels_to_cm(robot_x_px, robot_y_px, pixel_to_cm_ratio)
+    
+    # Get target position (marker 3)
+    target_x_px, target_y_px = marker_centers[3]
+    target_x_cm, target_y_cm = pixels_to_cm(target_x_px, target_y_px, pixel_to_cm_ratio)
+    
+    print(f"Current robot position: ({robot_x_cm:.2f} cm, {robot_y_cm:.2f} cm)")
+    print(f"Target position (marker 3): ({target_x_cm:.2f} cm, {target_y_cm:.2f} cm)")
+    
+    # Generate movement commands
+    if robot_orientation is not None:
+        commands = generate_movement_commands(
+            robot_x_cm, robot_y_cm, robot_orientation, target_x_cm, target_y_cm)
+        
+        print("Movement commands:")
+        print(commands)
+        
+        # Automatically send the commands without asking for confirmation
+        print("Sending commands to robot to navigate to marker 3...")
+        success = await send_commands_ble(commands)
+        if success:
+            print("Commands sent successfully!")
+        else:
+            print("Failed to send commands.")
+    else:
+        print("Could not determine robot orientation. Cannot generate movement commands.")
+
+# Main function with asyncio support
+async def main():
     generate_aruco_markers()
     
     # calibrate
@@ -336,12 +433,14 @@ def main():
     if not cap.isOpened():
         print("Error: Could not open video capture.")
         return
-    print("Press 'q' to quit. Press 'c' to recalibrate camera. Press 'm' to enter movement mode.")
+    print("Press 'q' to quit. Press 'c' to recalibrate camera. Press 'm' to navigate to marker 3.")
     last_capture_time = time.time()
     counter = 0
     
     # Initialize pixel to cm ratio
     pixel_to_cm_ratio = None
+    latest_robot_orientation = None
+    latest_marker_centers = {}
 
     while True:
         ret, frame = cap.read()
@@ -356,6 +455,12 @@ def main():
         # detect markers
         frame_with_markers, marker_corners, marker_centers, robot_corners, robot_orientation = detect_aruco_markers(frame)
         
+        # Store latest valid data
+        if marker_centers:
+            latest_marker_centers = marker_centers
+        if robot_orientation is not None:
+            latest_robot_orientation = robot_orientation
+        
         # Calculate pixel to cm ratio if not already done
         if pixel_to_cm_ratio is None and len(marker_corners) >= 4:
             pixel_to_cm_ratio = calculate_pixel_to_cm_ratio(marker_corners)
@@ -369,6 +474,13 @@ def main():
             orientation_text = f"Orientation: {robot_orientation:.1f} degrees" if robot_orientation is not None else "Orientation: unknown"
             cv2.putText(frame_with_markers, f"Robot: ({robot_x_cm:.2f} cm, {robot_y_cm:.2f} cm) {orientation_text}", 
                        (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        
+        # Display target marker 3 position if available
+        if 3 in marker_centers and pixel_to_cm_ratio:
+            target_x_px, target_y_px = marker_centers[3]
+            target_x_cm, target_y_cm = pixels_to_cm(target_x_px, target_y_px, pixel_to_cm_ratio)
+            cv2.putText(frame_with_markers, f"Target (Marker 3): ({target_x_cm:.2f} cm, {target_y_cm:.2f} cm)", 
+                       (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         
         # crop frame
         crop_coords = None
@@ -413,10 +525,11 @@ def main():
         
         # show frame with crop
         cv2.imshow("Aruco Marker Detection", display_frame)
+        
+        # Handle user input
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
-
         # press c to recalibrate if image is bad
         elif key == ord('c'):
             print("Recalibrating camera...")
@@ -424,47 +537,14 @@ def main():
             if os.path.exists(CALIBRATION_FILE):
                 os.remove(CALIBRATION_FILE)
             camera_matrix, dist_coeffs = calibrate_camera()
-            
-        # press m to enter movement mode
+        # press m to automatically navigate to marker 3
         elif key == ord('m'):
-            if 0 not in marker_centers:
-                print("Cannot enter movement mode: Robot marker (ID 0) not detected.")
-                continue
-                
-            if pixel_to_cm_ratio is None:
-                print("Cannot enter movement mode: Pixel to cm ratio not calculated.")
-                continue
-            
-            # Get current robot position
-            robot_x_px, robot_y_px = marker_centers[0]
-            robot_x_cm, robot_y_cm = pixels_to_cm(robot_x_px, robot_y_px, pixel_to_cm_ratio)
-            
-            # Get destination from user
-            print(f"Current robot position: ({robot_x_cm:.2f} cm, {robot_y_cm:.2f} cm)")
-            print("Enter destination coordinates in pixels (x,y):")
-            try:
-                input_str = input().strip()
-                target_x_px, target_y_px = map(int, input_str.strip('()').split(','))
-                
-                # Convert target to cm
-                target_x_cm, target_y_cm = pixels_to_cm(target_x_px, target_y_px, pixel_to_cm_ratio)
-                
-                print(f"Target position in cm: ({target_x_cm:.2f}, {target_y_cm:.2f})")
-                
-                # Generate movement commands
-                if robot_orientation is not None:
-                    commands = generate_movement_commands(
-                        robot_x_cm, robot_y_cm, robot_orientation, target_x_cm, target_y_cm)
-                    
-                    print("Movement commands:")
-                    print(commands)
-                else:
-                    print("Could not determine robot orientation. Cannot generate movement commands.")
-            except ValueError:
-                print("Invalid input format. Use format 'x,y' or '(x,y)'.")
+            # Use latest available data
+            await enter_movement_mode(latest_marker_centers, pixel_to_cm_ratio, latest_robot_orientation)
 
     cap.release()
     cv2.destroyAllWindows()
 
+# Entry point with asyncio
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
