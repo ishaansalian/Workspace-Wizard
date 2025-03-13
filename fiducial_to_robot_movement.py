@@ -5,7 +5,7 @@ import time
 import os
 import math
 import asyncio
-from bleak import BleakClient
+from bleak import BleakClient, BleakScanner
 import re
 
 # ArUco marker settings
@@ -352,7 +352,18 @@ def parse_command(input_str):
         return (count if count else "1") + command
     return None
 
+async def find_device(name):
+    devices = await BleakScanner.discover()
+    for device in devices:
+        if device.name and name in device.name:
+            return device.address
+    return None
+
 async def send_commands_ble(commands):
+    ADDRESS = await find_device("ESP32_Robot")  # Adjust to match your device's name
+    if not ADDRESS:
+        print("ESP32 device not found!")
+        return
     """Send a list of commands over BLE with a delay between each"""
     try:
         async with BleakClient(BLE_ADDRESS) as client:
