@@ -11,15 +11,17 @@
 #define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-// Command Strings
-#define FORWARD_CMD "F"
-#define BACK_CMD "B"
-#define LEFT_CMD "L"
-#define RIGHT_CMD "R"
+BLEServer *pServer;
+BLECharacteristic *pCharacteristic;
+bool deviceConnected = false;
+unsigned long lastBatteryUpdate = 0;
 
 // Servo Pins
-#define LEFT_SERVO_PIN 41 // Adjust as needed
-#define RIGHT_SERVO_PIN 42 // Adjust as needed
+#define LEFT_SERVO_PIN 41
+#define RIGHT_SERVO_PIN 42
+
+Servo leftServo;
+Servo rightServo;
 
 // OLED I2C Pins
 #define OLED_SDA 18
@@ -32,63 +34,71 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // Battery Measurement
-#define BATTERY_PIN 12  // ADC1 Channel 7 (IO12)
-#define MAX_ADC_READING 4095  // 12-bit ADC resolution
-#define REF_VOLTAGE 3.3       // Reference voltage (V)
-#define FULL_BATTERY_VOLTAGE 3.3  // 3.3V corresponds to 100%
+#define BATTERY_PIN 12
+#define MAX_ADC_READING 4095
+#define REF_VOLTAGE 3.3
+#define NUM_SAMPLES 10
+#define BATTERY_UPDATE_MS 5000
 
-// Battery sampling settings
-#define NUM_SAMPLES 10       // Number of ADC samples for averaging
-#define BATTERY_UPDATE_MS 5000  // Update battery reading every 5 seconds
+// Voltage Divider Ratio: (R1 + R2) / R2 => (1.8K + 3.3K) / 1.8K = 5.1 / 1.8
+#define VOLTAGE_DIVIDER_RATIO (5.1 / 3.3)
 
-// Servo Objects
-Servo leftServo;
-Servo rightServo;
+// Define maximum battery voltage for percentage calculation
+#define MAX_BATTERY_VOLTAGE 3.7
 
-// BLE Variables
-BLEServer *pServer;
-BLECharacteristic *pCharacteristic;
-bool deviceConnected = false;
-unsigned long lastBatteryUpdate = 0; // Track battery update time
+// Struct to hold battery data
+struct BatteryData {
+    float voltage;
+    float percentage;
+};
 
-// Function to get the averaged battery voltage
-float getBatteryPercentage() {
+// Function to get battery voltage and percentage
+BatteryData getBatteryData() {
     int totalADC = 0;
-    
     for (int i = 0; i < NUM_SAMPLES; i++) {
         totalADC += analogRead(BATTERY_PIN);
-        delay(5);  // Short delay between samples
+        delay(5);
     }
 
+    // Calculate the average ADC value
     float avgADC = totalADC / (float)NUM_SAMPLES;
-    float voltage = (avgADC / MAX_ADC_READING) * REF_VOLTAGE;
-    
-    // Convert voltage to percentage (simple linear mapping)
-    float batteryPercentage = (voltage / FULL_BATTERY_VOLTAGE) * 100.0;
-    return batteryPercentage;
+    // Voltage at the ADC pin after voltage divider
+    float voltageAtDivider = (avgADC / MAX_ADC_READING) * REF_VOLTAGE;
+    // Actual battery voltage calculation
+    float batteryVoltage = voltageAtDivider * VOLTAGE_DIVIDER_RATIO;
+    // Calculate battery percentage
+    float batteryPercentage = (batteryVoltage / MAX_BATTERY_VOLTAGE) * 100.0;
+    if (batteryPercentage > 100.0) batteryPercentage = 100.0;
+
+    // Return both values in a struct
+    return {batteryVoltage, batteryPercentage};
 }
 
-// Function to update the OLED display
-void updateDisplay() {
+void updateDisplay(const String& message = "") {
+    BatteryData battery = getBatteryData();
+
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(WHITE);
-
-    // Print "Workspace Wizard" at the top
     display.setCursor(8, 5);  
     display.println("Workspace Wizard :D");
     
-    // Battery Percentage
+    // Display battery percentage and voltage
     display.setCursor(10, 25);
-    float battery = getBatteryPercentage();
     display.print("Battery: ");
-    display.print((int)battery); // Display as integer percentage
-    display.print("%");
+    display.print((int)battery.percentage);
+    display.print("%, ");
+    display.print(battery.voltage, 1); // Display with 2 decimal places
+    display.print("V");
 
-    // BLE Connection Status
-    display.setCursor(10, 45);
+    display.setCursor(10, 35);
     display.print("BLE: ");
     display.print(deviceConnected ? "ON" : "OFF");
+
+    if (!message.isEmpty()) {
+        display.setCursor(10, 45);
+        display.print(message);
+    }
 
     display.display();
 }
@@ -103,146 +113,178 @@ void stop() {
 void moveForward() {
   leftServo.write(120);
   rightServo.write(60);
-  delay(1000);           // Increased duration
+  delay(112.5);           // Increased duration
   stop();
 }
 
 void moveBackward() {
   leftServo.write(60);
   rightServo.write(120);
-  delay(1000);
+  delay(112.5);
   stop();
 }
 
 // Function to turn left on the spot for a short duration
 void turnLeft() {
-  leftServo.write(60);
-  rightServo.write(60);
-  delay(1000); // Adjusted for approximately 90° turn
+  leftServo.write(68);
+  rightServo.write(68);
+  delay(1045); // Adjusted for approximately 90° turn
   stop();
 }
 
 void turnRight() {
-  leftServo.write(120);
-  rightServo.write(120);
-  delay(1000); // Adjusted for approximately 90° turn
+  leftServo.write(112);
+  rightServo.write(112);
+  delay(1045); // Adjusted for approximately 90° turn
   stop();
 }
 
-// BLE Server Callbacks
+void smallTurnLeft() {
+  leftServo.write(75);
+  rightServo.write(75);
+  delay(170); // Adjusted for approximately 90° turn
+  stop();
+}
+
+void smallTurnRight() {
+  leftServo.write(105);
+  rightServo.write(105);
+  delay(170); // Adjusted for approximately 90° turn
+  stop();
+}
+
+void DemoSpinR() {
+  moveForward();
+  turnRight();
+  moveForward();
+  turnRight();
+  moveForward();
+  turnRight();
+  moveForward();
+  turnRight();
+  stop();
+}
+
+void DemoSpinL() {
+  moveForward();
+  turnLeft();
+  moveForward();
+  turnLeft();
+  moveForward();
+  turnLeft();
+  moveForward();
+  turnLeft();
+  stop();
+}
+
 class MyServerCallbacks : public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
         deviceConnected = true;
         updateDisplay();
     }
-
     void onDisconnect(BLEServer* pServer) {
         deviceConnected = false;
         updateDisplay();
-        BLEDevice::startAdvertising(); // Restart advertising for new connections
+        BLEDevice::startAdvertising();
     }
 };
 
-// BLE Write Callback (Handles Commands)
 class MyCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         String receivedValue = pCharacteristic->getValue().c_str();
 
-        if (receivedValue == FORWARD_CMD) {
-            Serial.println("Moving Forward");
-            moveForward();
-        } else if (receivedValue == BACK_CMD) {
-            Serial.println("Moving Backward");
-            moveBackward();
-        } else if (receivedValue == LEFT_CMD) {
-            Serial.println("Turning Left");
-            turnLeft();
-        } else if (receivedValue == RIGHT_CMD) {
-            Serial.println("Turning Right");
-            turnRight();
-        } else {
-            Serial.println("Unknown command, stopping");
-            stop();
+        if (receivedValue == "finished" || receivedValue == "stuck") {
+            Serial.println("Status: " + receivedValue);
+            updateDisplay(receivedValue);
+            return;
         }
-    }
-};
 
-// BLE Write Callback (for BLE Snippet Integration)
-class MySnipCallbacks : public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
-        std::string value = std::string(pCharacteristic->getValue().c_str());
-        if (value.length() > 0) {
-            Serial.print("Received: ");
-            Serial.println(value.c_str());
+        if (receivedValue.length() < 1) return;
+
+        int repeatCount = 1;
+        char commandChar;
+        if (isdigit(receivedValue[0])) {
+            repeatCount = receivedValue.substring(0, receivedValue.length() - 1).toInt();
+            commandChar = receivedValue[receivedValue.length() - 1];
+        } else {
+            commandChar = receivedValue[0];
+        }
+
+        for (int i = 0; i < repeatCount; i++) {
+            switch (commandChar) {
+                case 'F':
+                    Serial.println("Moving Forward");
+                    moveForward();
+                    break;
+                case 'B':
+                    Serial.println("Moving Backward");
+                    moveBackward();
+                    break;
+                case 'L':
+                    Serial.println("Turning Left");
+                    turnLeft();
+                    break;
+                case 'R':
+                    Serial.println("Turning Right");
+                    turnRight();
+                    break;
+                case 'O':
+                    Serial.println("Spinning Left");
+                    DemoSpinL();
+                    break;
+                case 'P':
+                    Serial.println("Spinning Right");
+                    DemoSpinR();
+                    break;
+                case 'N':
+                    Serial.println("Adjusting Left");
+                    smallTurnLeft();
+                    break;
+                case 'M':
+                    Serial.println("Adjusting Right");
+                    smallTurnRight();
+                    break;
+                default:
+                    Serial.println("Unknown command, stopping");
+                    stop();
+                    return;
+            }
         }
     }
 };
 
 void setup() {
     Serial.begin(115200);
-    
-    // Initialize I2C with custom pins
     Wire.begin(OLED_SDA, OLED_SCL);
-
-    // Initialize OLED Display
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
         Serial.println("SSD1306 allocation failed");
         for (;;);
     }
-
-    // Initialize Battery Measurement
-    analogReadResolution(12);  // 12-bit ADC resolution
-    updateDisplay(); // Initial display
-
-    // Attach Servos
+    analogReadResolution(12);
+    updateDisplay();
     leftServo.attach(LEFT_SERVO_PIN);
     rightServo.attach(RIGHT_SERVO_PIN);
     stop();
-
-    // Initialize BLE
     BLEDevice::init("ESP32_Robot");
-
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
-
-    // Create BLE Service
     BLEService *pService = pServer->createService(SERVICE_UUID);
-
-    // Create BLE Characteristic
     pCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID,
         BLECharacteristic::PROPERTY_READ |
         BLECharacteristic::PROPERTY_WRITE
     );
-
-    pCharacteristic->setCallbacks(new MyCallbacks());  // Command handling callbacks
-
-    // Start BLE Service
+    pCharacteristic->setCallbacks(new MyCallbacks());
     pService->start();
-
-    // Create another Characteristic for BLE Write Snippet (Optional)
-    BLECharacteristic *pSnipCharacteristic = pService->createCharacteristic(
-        "12345678-1234-5678-1234-56789abcdef1",
-        BLECharacteristic::PROPERTY_WRITE
-    );
-
-    pSnipCharacteristic->setCallbacks(new MySnipCallbacks()); // Additional BLE command handling
-
-    // Start Advertising
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-    pAdvertising->addServiceUUID(SERVICE_UUID);
-    pAdvertising->setScanResponse(true);
-    pAdvertising->setMinPreferred(0x06);
-    pAdvertising->setMinPreferred(0x12);
     pAdvertising->start();
-
-    Serial.println("Waiting for a client to connect...");
+    Serial.println("Waiting for a client connection...");
 }
 
 void loop() {
-    // Update battery reading every BATTERY_UPDATE_MS milliseconds
-    if (millis() - lastBatteryUpdate > BATTERY_UPDATE_MS) {
-        lastBatteryUpdate = millis();
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastBatteryUpdate >= BATTERY_UPDATE_MS) {
         updateDisplay();
+        lastBatteryUpdate = currentMillis;
     }
 }
