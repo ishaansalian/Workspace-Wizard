@@ -1,9 +1,10 @@
 import asyncio
-from bleak import BleakClient
+from bleak import BleakClient, BleakScanner
 import re
 
 # Replace this with your ESP32's BLE address
-#ADDRESS = "4D9AF5DE-80E1-6702-F956-D874824235C9" # temporary
+# ADDRESS = "4D9AF5DE-80E1-6702-F956-D874824235C9"
+ADDRESS = ""
 
 # Replace with your ESP32's BLE characteristic UUID
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
@@ -27,8 +28,18 @@ def parse_command(input_str):
         return (count if count else "1") + command
     return None
 
+async def find_device(name):
+    devices = await BleakScanner.discover()
+    for device in devices:
+        if device.name and name in device.name:
+            return device.address
+    return None
+
 async def connect_and_send():
     ADDRESS = await find_device("ESP32_Robot")  # Adjust to match your device's name
+    if not ADDRESS:
+        print("ESP32 device not found!")
+        return
     async with BleakClient(ADDRESS) as client:
         if await client.is_connected():
             print(f"Connected to {ADDRESS}")
