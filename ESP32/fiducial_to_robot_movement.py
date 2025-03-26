@@ -8,14 +8,17 @@ import asyncio
 from bleak import BleakClient, BleakScanner
 import re
 
+# very important for NVIDIA
+pipeline = "v4l2src device=/dev/video0 ! image/jpeg,framerate=30/1 ! jpegdec ! videoconvert ! appsink"
+
 # ArUco marker settings
 ARUCO_DICT = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
 MARKER_IDS = [0, 1, 2, 3, 4]  
 MARKER_SIZE = 200  # pixels
 CAPTURE_INTERVAL = 10  # sec to take image
 CALIBRATION_DIR = "calibration_images"
-CHESSBOARD_SIZE = (11, 7)  # chessboard size
-SQUARE_SIZE = 2.1  # cm
+CHESSBOARD_SIZE = (7, 7)  # chessboard size
+SQUARE_SIZE = 2.0  # cm
 NUM_CALIBRATION_IMGS = 15
 MOVEMENT_UNIT = 1.0  # cm 
 
@@ -26,7 +29,7 @@ PIXEL_TO_CM_RATIO = None
 CALIBRATION_FILE = "camera_calibration.npz"
 
 # BLE settings
-BLE_ADDRESS = "4D9AF5DE-80E1-6702-F956-D874824235C9"
+# BLE_ADDRESS = "4D9AF5DE-80E1-6702-F956-D874824235C9"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 VALID_COMMANDS = {"F", "B", "L", "R", "N", "M", "O", "P"}
 CUSTOM_MESSAGES = {"finished", "stuck"}
@@ -39,95 +42,136 @@ def generate_aruco_markers():
         cv2.imwrite(f"marker_{marker_id}.png", marker)
     print("Markers saved as PNG files.")
 
-# Camera calibration functions
+
+
+
+
+# Profiling function
+def profile_time(start_time, task_name):
+    elapsed = time.time() - start_time
+    print(f"[{task_name}] Elapsed time: {elapsed:.4f} seconds")
+
+# Camera calibration function
 def calibrate_camera():
+    start_total = time.time()
     if os.path.exists(CALIBRATION_FILE):
         print("Loading existing camera calibration...")
         data = np.load(CALIBRATION_FILE)
         camera_matrix, dist_coeffs = data['camera_matrix'], data['dist_coeffs']
+        profile_time(start_total, "Load Calibration")
         return camera_matrix, dist_coeffs
     
     print("Camera calibration!")
     print(f"Please show a {CHESSBOARD_SIZE[0]}x{CHESSBOARD_SIZE[1]} chessboard pattern to the camera")
     print(f"Need to capture {NUM_CALIBRATION_IMGS} images")
     
-    # create directory for calibration images if it doesn't exist
+    # Create directory for calibration images if it doesn't exist
     if not os.path.exists(CALIBRATION_DIR):
         os.makedirs(CALIBRATION_DIR)
     
-    # prep object points
+    # Prep object points
     objp = np.zeros((CHESSBOARD_SIZE[0] * CHESSBOARD_SIZE[1], 3), np.float32)
     objp[:, :2] = np.mgrid[0:CHESSBOARD_SIZE[0], 0:CHESSBOARD_SIZE[1]].T.reshape(-1, 2) * SQUARE_SIZE
     objpoints = []  # 3D points
     imgpoints = []  # 2D points in image
-    cap = cv2.VideoCapture(0)    
+
+    #pipeline = (
+    #    "v4l2src device=/dev/video0 ! image/jpeg, width=640, height=480, framerate=30/1 ! "
+    #    "jpegdec ! videoconvert ! appsink"
+    #)
+
+    # Optimized GStreamer pipeline with reduced resolution
+    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+
+    if not cap.isOpened():
+        print("Error: Could not open camera.")
+        return None, None
+
     img_count = 0
+
     while img_count < NUM_CALIBRATION_IMGS:
+        start_frame = time.time()
         ret, frame = cap.read()
+        profile_time(start_frame, "Frame Capture")
+
         if not ret:
             print("Error: Could not read frame.")
             break
-        
+
+        # CPU-based grayscale conversion (faster for lower resolutions)
+        start_gray = time.time()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        profile_time(start_gray, "CPU Grayscale Conversion")
+
+        # Chessboard detection
+        start_detect = time.time()
         ret, corners = cv2.findChessboardCorners(gray, CHESSBOARD_SIZE, None)
+        profile_time(start_detect, "Chessboard Detection")
+
         display_frame = frame.copy()
-        
+
         if ret:
-            # refine corner positions
+            # Refine corner positions
+            start_refine = time.time()
             criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
             corners2 = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-            
-            # draw corners (debugging?)
+            profile_time(start_refine, "Corner Refinement")
+
+            # Draw corners and display the frame
             cv2.drawChessboardCorners(display_frame, CHESSBOARD_SIZE, corners2, ret)
-            
-            # instructions
-            cv2.putText(display_frame, f"Image {img_count+1}/{NUM_CALIBRATION_IMGS}: Press SPACE to capture", 
+            cv2.putText(display_frame, f"Image {img_count+1}/{NUM_CALIBRATION_IMGS}: Press SPACE to capture",
                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            # Save calibration data if spacebar is pressed
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord(' '):
+                img_name = os.path.join(CALIBRATION_DIR, f"calibration_{img_count}.jpg")
+                cv2.imwrite(img_name, frame)
+                print(f"Saved {img_name}")
+                objpoints.append(objp)
+                imgpoints.append(corners2)
+                img_count += 1
+                time.sleep(0.2)
         else:
-            cv2.putText(display_frame, "Chessboard not detected", 
+            cv2.putText(display_frame, "Chessboard not detected",
                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        
+
         cv2.imshow("Camera Calibration", display_frame)
 
-        key = cv2.waitKey(1) & 0xFF
-
-        # quit if 'q' pressed
-        if key == ord('q'):
+        # Quit on 'q' key press
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-        # when spacebar pressed, take pic and store points
-        elif key == ord(' ') and ret: 
-            img_name = os.path.join(CALIBRATION_DIR, f"calibration_{img_count}.jpg")
-            cv2.imwrite(img_name, frame)
-            print(f"Saved {img_name}")
-            objpoints.append(objp)
-            imgpoints.append(corners2)
-            img_count += 1
-            time.sleep(0.5)
     
     cap.release()
     cv2.destroyAllWindows()
-    
-    if img_count < NUM_CALIBRATION_IMGS:
-        print(f"Warning: Only captured {img_count}/{NUM_CALIBRATION_IMGS} images.") 
+
+    # Camera Calibration Process
     print("Calibrating camera, please wait...")
-    
-    # calibrate
+    start_calibrate = time.time()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     ret, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
-        objpoints, imgpoints, gray.shape[::-1], None, None)
-    
+        objpoints, imgpoints, gray.shape[::-1], None, None
+    )
+    profile_time(start_calibrate, "Camera Calibration")
+
     if ret:
         print("Camera calibration successful!")
         print(f"Camera Matrix:\n{camera_matrix}")
         print(f"Distortion Coefficients:\n{dist_coeffs}")
-        
-        # save calibration results
+
+        # Save calibration results
         np.savez(CALIBRATION_FILE, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
-        print(f"Calibration saved to {CALIBRATION_FILE}")
-        
+        profile_time(start_total, "Total Calibration Process")
         return camera_matrix, dist_coeffs
     else:
         print("Camera calibration failed.")
         return None, None
+
+
+
+
+
+
 
 def undistort_image(frame, camera_matrix, dist_coeffs):
     if camera_matrix is None or dist_coeffs is None:
@@ -366,9 +410,9 @@ async def send_commands_ble(commands):
         return
     """Send a list of commands over BLE with a delay between each"""
     try:
-        async with BleakClient(BLE_ADDRESS) as client:
+        async with BleakClient(ADDRESS) as client:
             if await client.is_connected():
-                print(f"Connected to {BLE_ADDRESS}")
+                print(f"Connected to {ADDRESS}")
                 
                 for cmd in commands:
                     parsed_command = parse_command(cmd)
@@ -435,12 +479,12 @@ async def enter_movement_mode(marker_centers, pixel_to_cm_ratio, robot_orientati
 
 # Main function with asyncio support
 async def main():
-    generate_aruco_markers()
+    #generate_aruco_markers()
     
     # calibrate
     camera_matrix, dist_coeffs = calibrate_camera()
     
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
     if not cap.isOpened():
         print("Error: Could not open video capture.")
         return
@@ -513,21 +557,19 @@ async def main():
                 cropped_with_robot, _, _, robot_corners_cropped, _ = detect_aruco_markers(cropped_frame)
 
                 # display corners
-                if robot_corners_cropped is not None:
-                    print(f"Robot marker (ID 0) corners in cropped image: {robot_corners_cropped}")
+                #if robot_corners_cropped is not None:
+                    #print(f"Robot marker (ID 0) corners in cropped image: {robot_corners_cropped}")
                 current_time = time.time()
                 if current_time - last_capture_time >= CAPTURE_INTERVAL:
-                    filename = f"cropped_desk_{counter}.jpg"
-                    cv2.imwrite(filename, cropped_with_robot)
-                    print(f"Saved {filename}")
+
                     if 0 in marker_centers:
                         robot_x, robot_y = marker_centers[0]
-                        print(f"Robot position in cropped image: ({robot_x}, {robot_y})")
+                        #print(f"Robot position in cropped image: ({robot_x}, {robot_y})")
                         
                         # Convert to cm if ratio is available
                         if pixel_to_cm_ratio:
                             robot_x_cm, robot_y_cm = pixels_to_cm(robot_x, robot_y, pixel_to_cm_ratio)
-                            print(f"Robot position in cm: ({robot_x_cm:.2f}, {robot_y_cm:.2f})")
+                            #print(f"Robot position in cm: ({robot_x_cm:.2f}, {robot_y_cm:.2f})")
                     
                     counter += 1
                     last_capture_time = current_time
