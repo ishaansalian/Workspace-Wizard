@@ -40,8 +40,13 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 #define NUM_SAMPLES 10
 #define BATTERY_UPDATE_MS 5000
 
+#define BATTERY_LOW_VOLTAGE 3.3  // Warning threshold
+#define BATTERY_CRITICAL_VOLTAGE 3.0 // Below this, battery is unsafe to discharge further
+#define MIN_BATTERY_VOLTAGE 3.0
+#define MAX_BATTERY_VOLTAGE 4.2
+
 // Voltage Divider Ratio: (R1 + R2) / R2 => (1.8K + 3.3K) / 1.8K = 5.1 / 1.8
-#define VOLTAGE_DIVIDER_RATIO (5.1 / 3.3)
+#define VOLTAGE_DIVIDER_RATIO (5.1 / 3.3) // Need to be updated
 
 // Define maximum battery voltage for percentage calculation
 #define MAX_BATTERY_VOLTAGE 3.7
@@ -49,7 +54,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 // Struct to hold battery data
 struct BatteryData {
     float voltage;
-    float percentage;
+    int percentage;
 };
 
 // Function to get battery voltage and percentage
@@ -62,16 +67,17 @@ BatteryData getBatteryData() {
 
     // Calculate the average ADC value
     float avgADC = totalADC / (float)NUM_SAMPLES;
-    // Voltage at the ADC pin after voltage divider
     float voltageAtDivider = (avgADC / MAX_ADC_READING) * REF_VOLTAGE;
-    // Actual battery voltage calculation
     float batteryVoltage = voltageAtDivider * VOLTAGE_DIVIDER_RATIO;
-    // Calculate battery percentage
-    float batteryPercentage = (batteryVoltage / MAX_BATTERY_VOLTAGE) * 100.0;
-    if (batteryPercentage > 100.0) batteryPercentage = 100.0;
 
-    // Return both values in a struct
-    return {batteryVoltage, batteryPercentage};
+    // Battery percentage calculation (mapped between 3.0V and 4.2V)
+    float batteryPercentage = ((batteryVoltage - MIN_BATTERY_VOLTAGE) / (MAX_BATTERY_VOLTAGE - MIN_BATTERY_VOLTAGE)) * 100.0;
+
+    // Ensure percentage stays in valid range
+    if (batteryPercentage > 100.0) batteryPercentage = 100;
+    if (batteryPercentage < 0.0) batteryPercentage = 0;
+
+    return {batteryVoltage, (int)batteryPercentage};
 }
 
 void updateDisplay(const String& message = "") {
@@ -88,8 +94,21 @@ void updateDisplay(const String& message = "") {
     display.print("Battery: ");
     display.print((int)battery.percentage);
     display.print("%, ");
-    display.print(battery.voltage, 1); // Display with 2 decimal places
+    display.print(battery.voltage, 2); // Display with 2 decimal places
     display.print("V");
+
+    // Display warning if battery is low
+    if (battery.voltage <= BATTERY_LOW_VOLTAGE) {
+        display.setCursor(10, 25);
+        display.setTextColor(WHITE, BLACK);
+        display.println("LOW BATTERY!");
+    }
+
+    if (battery.voltage <= BATTERY_CRITICAL_VOLTAGE) {
+        display.setCursor(10, 25);
+        display.setTextColor(WHITE, BLACK);
+        display.println("CRITICAL! CHARGE NOW!");
+    }
 
     display.setCursor(10, 35);
     display.print("BLE: ");
