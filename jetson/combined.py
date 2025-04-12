@@ -602,8 +602,10 @@ def input_picture():
     print("")
     print("STARTING TO KNOLL")
     print("")
-    print(robot_position)
     input("Press ENTER to continue")
+
+    while result.masks is None:
+        result = model.predict(IMAGE, conf=conf)[0]
 
     knoll_loc(result, robot_position)
 
@@ -878,6 +880,7 @@ def undistort_image(frame, camera_matrix, dist_coeffs):
 
 def detect_aruco_markers(frame):
 
+    flipped_frame = cv2.flip(frame, -1)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = aruco.detectMarkers(gray, ARUCO_DICT)
     marker_corners = {}
@@ -888,8 +891,8 @@ def detect_aruco_markers(frame):
 
     if ids is None:
         print("No Aruco Markers Detected")
-        cv2.putText(frame, "No Aruco Markers Detected. Enter any key to try again.", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        cv2.imshow("Aruco Failure", frame)
+        cv2.putText(flipped_frame, "No Aruco Markers Detected. Enter any key to try again.", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.imshow("Aruco Failure", flipped_frame)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
@@ -900,7 +903,7 @@ def detect_aruco_markers(frame):
         if id in undetected_ids:
             undetected_ids.remove(id)
     if 0 in undetected_ids:
-        undetected_ids.remove(id)
+        undetected_ids.remove(0)
         print("Robot not detected.")
         failure = True
     if len(undetected_ids) > 0:
@@ -908,8 +911,8 @@ def detect_aruco_markers(frame):
         failure = True
 
     if failure:
-        cv2.putText(frame, "Aruco Markers Missing. Enter any key to try again.", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        cv2.imshow("Aruco Failure", frame)
+        cv2.putText(flipped_frame, "Aruco Markers Missing. Enter any key to try again.", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.imshow("Aruco Failure", flipped_frame)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
         return marker_corners, marker_centers, robot_corners, robot_orientation, failure
@@ -956,12 +959,19 @@ def get_pixel_to_cm(robot_corners):
 
 def get_crop_corners(marker_corners):
 
-    top_left = marker_corners[1]            # marker 1
-    bottom_right = marker_corners[2]        # marker 2
+    center_1 = np.mean(marker_corners[1], axis=0)
+    center_2 = np.mean(marker_corners[2], axis=0)
+
+    if center_1[0] < center_2[0]:
+        top_left = marker_corners[1]      # marker on the left (marker 1)
+        bottom_right = marker_corners[2]  # marker on the right (marker 2)
+    else:
+        top_left = marker_corners[2]
+        bottom_right = marker_corners[1]
     
     # convert to points
-    br_1 = max(top_left, key=lambda pt: (pt[1], pt[0]))         # bottom-most right corner of marker 1
-    tl_2 = min(bottom_right, key=lambda pt: (pt[1], pt[0]))     # top-most left corner of marker 2
+    br_1 = max(top_left, key=lambda pt: np.linalg.norm(pt))        # closest to origin
+    tl_2 = min(bottom_right, key=lambda pt: np.linalg.norm(pt))
     
     x1, y1 = int(br_1[0]), int(br_1[1])
     x2, y2 = int(tl_2[0]), int(tl_2[1])
@@ -1105,7 +1115,7 @@ class CameraCropper:
         cv2.rectangle(display_frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
             
         # Crop the image if possible
-        x1, y1, x2, y2 = crop_coords
+        print(x1, y1, x2, y2)
         cropped_image = frame[y1:y2, x1:x2]
         cropped_display = cropped_image.copy()
         
@@ -1146,6 +1156,8 @@ class CameraCropper:
             # Also save a version with the robot marker highlighted
             cv2.imwrite(f"cropped_desk_robot_{self.counter-1}.jpg", cropped_display)
 
+        display_frame = cv2.flip(display_frame, -1)
+        cropped_display = cv2.flip(cropped_display, -1)
         cv2.imshow("Camera Feed with Markers", display_frame)
         cv2.imshow("Cropped Desk", cropped_display)
                 
